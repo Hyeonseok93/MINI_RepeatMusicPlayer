@@ -1,0 +1,22 @@
+# Python / PyInstaller
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/
+build/
+dist/
+*.spec
+
+# Large binaries & release bundles
+*.exe
+*.zip
+*.rar
+*.7z
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
