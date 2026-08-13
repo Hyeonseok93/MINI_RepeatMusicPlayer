@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from collections import Counter
 from pathlib import Path
 from typing import List, Optional
@@ -15,13 +14,13 @@ from PySide6.QtCore import (
     QPoint,
     QProcess,
     QPropertyAnimation,
-    QRectF,
     QSize,
     Qt,
     QUrl,
 )
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
+from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from shiboken6 import isValid
 
 import RepeatMusicPlayerCore as Core
 
@@ -30,7 +29,7 @@ import RepeatMusicPlayerCore as Core
 DARK_GLASS_STYLE = """
 QWidget {
     color: #EDEFF5;
-    font-family: "Segoe UI", "Pretendard", "Malgun Gothic", sans-serif;
+    font-family: "Pretendard", "Malgun Gothic", "Segoe UI", sans-serif;
     font-size: 13px;
 }
 
@@ -97,7 +96,6 @@ QSlider::handle:horizontal {
 }
 QSlider::handle:horizontal:hover {
     background: #60A5FA;
-    transform: scale(1.2);
 }
 """
 
@@ -329,7 +327,7 @@ class HelpDialog(QtWidgets.QDialog):
         layout.setContentsMargins(20, 20, 20, 20)
         layout.setSpacing(14)
 
-        title = QtWidgets.QLabel("🎧 MNI Repeat Music Player 가이드")
+        title = QtWidgets.QLabel("🎧 MINI Repeat Music Player 가이드")
         title.setStyleSheet("font-size: 17px; font-weight: bold; color: #60A5FA;")
         layout.addWidget(title)
 
@@ -498,6 +496,7 @@ class TrackRow(QtWidgets.QWidget):
 
     def _style_tool_btn(self, btn: QtWidgets.QToolButton, is_danger: bool = False):
         btn.setCursor(Qt.PointingHandCursor)
+        btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         btn.setFixedSize(24, 24)
         if is_danger:
             btn.setStyleSheet("""
@@ -593,11 +592,11 @@ class TrackList(QtWidgets.QListWidget):
             if w:
                 w.update_index(i)
 
-    def highlight_path(self, target: Optional[Path]):
+    def highlight_track(self, target: Optional[Core.Track]):
         for i in range(self.count()):
             it = self.item(i)
             w: TrackRow = self.itemWidget(it)
-            if w and target is not None and w.track.path == target:
+            if w and target is not None and w.track.uid == target.uid:
                 it.setSelected(True)
                 w.setStyleSheet("""
                     TrackRow {
@@ -639,15 +638,16 @@ class MainWindow(QtWidgets.QWidget):
 
         # 상태 제어 변수
         self.queue = Core.PlayQueue()
-        self.current_path: Optional[Path] = None
-        self._history: List[Path] = []
+        self.current_track: Optional[Core.Track] = None
+        self._history: List[Core.Track] = []
         self._scrubbing: bool = False
-        self._totals: Counter[Path] = Counter()
-        self._sofar: Counter[Path] = Counter()
+        self._totals: Counter[str] = Counter()
+        self._sofar: Counter[str] = Counter()
 
         # FFmpeg 병합 상태
         self._merge_proc: Optional[QProcess] = None
         self._merge_progress: Optional[QtWidgets.QProgressDialog] = None
+        self._merge_canceled: bool = False
 
         # 미디어 변경 및 비동기 재생 보장 플래그
         self._is_changing_source: bool = False
@@ -698,14 +698,17 @@ class MainWindow(QtWidgets.QWidget):
 
         self.btn_choose = QtWidgets.QPushButton("📂 폴더 열기")
         self._style_btn(self.btn_choose)
+        self.btn_choose.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_choose.clicked.connect(self.choose_folder)
 
         self.btn_add_files = QtWidgets.QPushButton("➕ 파일 추가")
         self._style_btn(self.btn_add_files)
+        self.btn_add_files.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_add_files.clicked.connect(self.add_files)
 
         self.btn_help = QtWidgets.QPushButton("❓ 도움말(F1)")
         self._style_btn(self.btn_help)
+        self.btn_help.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_help.clicked.connect(self.show_help)
 
         header.addWidget(self.btn_choose)
@@ -719,6 +722,7 @@ class MainWindow(QtWidgets.QWidget):
 
         self.btn_merge = QtWidgets.QPushButton("📎 파일 합치기")
         self._style_btn(self.btn_merge, primary=True)
+        self.btn_merge.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_merge.setToolTip("현재 UI 순서와 트랙별 반복 횟수를 적용하여 하나의 음원 파일로 병합 내보내기합니다.")
         self.btn_merge.clicked.connect(self.combine_files)
         preset_bar.addWidget(self.btn_merge)
@@ -757,6 +761,7 @@ class MainWindow(QtWidgets.QWidget):
 
         for b in (self.btn_reset_1, self.btn_reset_0, self.btn_inc, self.btn_dec):
             self._style_preset_btn(b)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             card_layout.addWidget(b)
 
         # 구분선
@@ -768,6 +773,7 @@ class MainWindow(QtWidgets.QWidget):
         self.btn_shuffle = QtWidgets.QPushButton("🔀 순서 셔플")
         self.btn_shuffle.setToolTip("트랙 재생 순서를 무작위로 섞습니다")
         self._style_preset_btn(self.btn_shuffle, accent=True)
+        self.btn_shuffle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_shuffle.clicked.connect(self._shuffle_list)
         card_layout.addWidget(self.btn_shuffle)
 
@@ -805,6 +811,8 @@ class MainWindow(QtWidgets.QWidget):
 
         self.btn_update = QtWidgets.QPushButton("🔄 반복 설정 새로고침")
         self._style_btn(self.btn_update, primary=True)
+        self.btn_update.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.btn_update.setToolTip("변경된 반복/순서를 재생 큐에 반영하고 처음부터 다시 재생합니다.")
         self.btn_update.clicked.connect(self.update_repeats_and_restart)
         ctrl_bar.addWidget(self.btn_update)
 
@@ -817,6 +825,7 @@ class MainWindow(QtWidgets.QWidget):
 
         for b in (self.btn_prev, self.btn_play, self.btn_pause, self.btn_next):
             self._style_btn(b)
+            b.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             b.setFixedWidth(112)
 
         ctrl_bar.addWidget(self.btn_prev)
@@ -831,6 +840,7 @@ class MainWindow(QtWidgets.QWidget):
         self.btn_mute.setText("🔊")
         self.btn_mute.setToolTip("음소거 토글")
         self._style_mute_btn(self.btn_mute)
+        self.btn_mute.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.btn_mute.clicked.connect(self._toggle_mute)
 
         self.vol_slider = QtWidgets.QSlider(Qt.Horizontal)
@@ -1002,16 +1012,30 @@ class MainWindow(QtWidgets.QWidget):
         QShortcut(QKeySequence("Space"), self, activated=self._toggle_play_pause)
         QShortcut(QKeySequence("Left"), self, activated=lambda: self._nudge(-5000))
         QShortcut(QKeySequence("Right"), self, activated=lambda: self._nudge(+5000))
-        QShortcut(QKeySequence("Up"), self, activated=lambda: self._adjust_volume(+5))
-        QShortcut(QKeySequence("Down"), self, activated=lambda: self._adjust_volume(-5))
+        QShortcut(QKeySequence("Up"), self, activated=lambda: self._on_volume_shortcut(+5))
+        QShortcut(QKeySequence("Down"), self, activated=lambda: self._on_volume_shortcut(-5))
         QShortcut(QKeySequence("F1"), self, activated=self.show_help)
+
+    def _on_volume_shortcut(self, delta: int):
+        """리스트/스핀박스 포커스 중에는 ↑↓를 볼륨으로 가로채지 않음"""
+        fw = self.focusWidget()
+        if isinstance(fw, (QtWidgets.QAbstractItemView, QtWidgets.QAbstractSpinBox)):
+            return
+        self._adjust_volume(delta)
 
     def show_toast(self, message: str, symbol: str = "ℹ️"):
         if not hasattr(self, "_active_toasts"):
             self._active_toasts = []
         toast = ToastNotification(self, message, symbol)
         self._active_toasts.append(toast)
-        toast.destroyed.connect(lambda obj=toast: self._active_toasts.remove(obj) if hasattr(self, "_active_toasts") and obj in self._active_toasts else None)
+
+        def _drop(_obj=None, t=toast):
+            try:
+                self._active_toasts.remove(t)
+            except (ValueError, AttributeError):
+                pass
+
+        toast.destroyed.connect(_drop)
         toast.show_toast()
 
     def show_help(self):
@@ -1038,7 +1062,7 @@ class MainWindow(QtWidgets.QWidget):
         for t in tracks:
             self._add_track_to_list(t)
 
-        self._rebuild_queue_state()
+        self._integrate_new_tracks(tracks)
         self.show_toast(f"{len(tracks)}개 오디오 트랙 추가됨", "🎵")
 
     # ===== 트랙 리스트 관리 =====
@@ -1059,6 +1083,8 @@ class MainWindow(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, lambda: self._do_move_track_up(row_widget))
 
     def _do_move_track_up(self, row_widget: QtWidgets.QWidget):
+        if not isValid(row_widget):
+            return
         tracks = self.list.items_in_order()
         row = -1
         for i in range(self.list.count()):
@@ -1071,12 +1097,14 @@ class MainWindow(QtWidgets.QWidget):
             for t in tracks:
                 self._add_track_to_list(t)
             self.list.refresh_indices()
-            self._rebuild_queue_state()
+            self._on_structure_changed()
 
     def _move_track_down(self, row_widget: QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, lambda: self._do_move_track_down(row_widget))
 
     def _do_move_track_down(self, row_widget: QtWidgets.QWidget):
+        if not isValid(row_widget):
+            return
         tracks = self.list.items_in_order()
         row = -1
         for i in range(self.list.count()):
@@ -1089,12 +1117,14 @@ class MainWindow(QtWidgets.QWidget):
             for t in tracks:
                 self._add_track_to_list(t)
             self.list.refresh_indices()
-            self._rebuild_queue_state()
+            self._on_structure_changed()
 
     def _delete_track(self, row_widget: QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, lambda: self._do_delete_track(row_widget))
 
     def _do_delete_track(self, row_widget: QtWidgets.QWidget):
+        if not isValid(row_widget):
+            return
         tracks = self.list.items_in_order()
         row = -1
         for i in range(self.list.count()):
@@ -1107,7 +1137,7 @@ class MainWindow(QtWidgets.QWidget):
             for t in tracks:
                 self._add_track_to_list(t)
             self.list.refresh_indices()
-            self._rebuild_queue_state()
+            self._on_structure_changed()
             self.show_toast("트랙 삭제됨", "🗑️")
 
     def _shuffle_list(self):
@@ -1120,8 +1150,17 @@ class MainWindow(QtWidgets.QWidget):
         self.list.clear()
         for t in tracks:
             self._add_track_to_list(t)
-        self._rebuild_queue_state()
+        self._on_structure_changed()
         self.show_toast("트랙 순서 셔플 완료", "🎲")
+
+    def _on_structure_changed(self):
+        """순서/삭제/셔플 등 목록 구조가 바뀌면 재생 큐와 동기화"""
+        if self._is_playback_active():
+            self._stop_playback_reset()
+            self._rebuild_queue_state(force_rebuild=True)
+            self._update_now_status("목록이 변경되어 재생을 멈췄습니다. 재생을 다시 눌러 주세요")
+        else:
+            self._rebuild_queue_state(force_rebuild=True)
 
     def _set_all_repeats(self, val: int):
         for i in range(self.list.count()):
@@ -1147,26 +1186,72 @@ class MainWindow(QtWidgets.QWidget):
                 w.spin_repeats.blockSignals(False)
         self._rebuild_queue_state()
 
-    def _on_track_repeat_changed(self, val: int):
+    def _on_track_repeat_changed(self, _val: int):
         QtCore.QTimer.singleShot(0, self._rebuild_queue_state)
 
     def _on_list_reordered(self):
         self.list.refresh_indices()
-        self._rebuild_queue_state()
+        self._on_structure_changed()
 
-    def _rebuild_queue_state(self, reset_queue: bool = True):
+    def _is_playback_active(self) -> bool:
+        return self.current_track is not None and self.player.playbackState() != QMediaPlayer.StoppedState
+
+    def _stop_playback_reset(self):
+        """재생 중단 및 큐/히스토리 초기화 (폴더 교체·강제 리셋용)"""
+        self._pending_play = False
+        self._is_changing_source = True
+        try:
+            self.player.stop()
+        finally:
+            self._is_changing_source = False
+        self.current_track = None
+        self._history.clear()
+        self._sofar.clear()
+        self.queue.clear()
+        self.list.highlight_track(None)
+
+    def _planned_totals(self, tracks: List[Core.Track]) -> Counter:
+        totals: Counter = Counter()
+        for t in tracks:
+            reps = max(0, int(t.repeats))
+            if reps > 0:
+                totals[t.uid] += reps
+        return totals
+
+    def _integrate_new_tracks(self, new_tracks: List[Core.Track]):
+        """대기 중이면 큐 재빌드, 재생 중이면 새 트랙만 남은 큐 끝에 추가"""
+        if self._is_playback_active():
+            self.queue.set_order(self.list.items_in_order())
+            for t in new_tracks:
+                self.queue.append_track_plays(t)
+                reps = max(0, int(t.repeats))
+                if reps > 0:
+                    self._totals[t.uid] += reps
+            total_ms = self.queue.total_expected_duration_ms()
+            if total_ms > 0:
+                self.lbl_total_time.setText(f"⏱️ 총 예정: {Core.format_ms(total_ms)}")
+            self.lbl_queue_stats.setText(f"🎵 {self.list.count()}개 트랙")
+        else:
+            self._rebuild_queue_state(force_rebuild=True)
+
+    def _rebuild_queue_state(self, reset_queue: bool = True, force_rebuild: bool = False):
         tracks = self.list.items_in_order()
         self.queue.set_order(tracks)
-        if reset_queue:
-            self.queue.build_queue()
-            self._totals = Counter(self.queue._q)
+        planned = self._planned_totals(tracks)
 
-        # 총 예정 재생시간 갱신
+        # 재생 중에는 남은 큐·반복 카운터를 덮어쓰지 않음 — "반복 설정 새로고침"으로만 반영
+        if reset_queue and (force_rebuild or not self._is_playback_active()):
+            self.queue.build_queue()
+            self._totals = Counter(t.uid for t in self.queue._q)
+        # else: keep live _q and _totals; total-time label still previews planned order
+
+        # 총 예정 재생시간 갱신 (UI 미리보기: 목록의 현재 반복 설정 기준)
         total_ms = self.queue.total_expected_duration_ms()
         if total_ms > 0:
             self.lbl_total_time.setText(f"⏱️ 총 예정: {Core.format_ms(total_ms)}")
         else:
-            self.lbl_total_time.setText(f"⏱️ 총 예정: {len(self.queue._q)}회 트랙")
+            play_units = sum(planned.values()) if planned else self.queue.remaining_count()
+            self.lbl_total_time.setText(f"⏱️ 총 예정: {play_units}회 트랙")
 
         # 트랙 총 수 요약 갱신
         self.lbl_queue_stats.setText(f"🎵 {len(tracks)}개 트랙")
@@ -1176,15 +1261,13 @@ class MainWindow(QtWidgets.QWidget):
         folder = QtWidgets.QFileDialog.getExistingDirectory(self, "음악 폴더 선택")
         if not folder:
             return
+        self._stop_playback_reset()
         tracks = Core.scan_folder(folder)
         self.list.clear()
         for t in tracks:
             self._add_track_to_list(t)
         self.lbl_folder.setText(f"🎼 폴더: {folder}")
-        self._rebuild_queue_state()
-        self._sofar.clear()
-        self.current_path = None
-        self._history.clear()
+        self._rebuild_queue_state(force_rebuild=True)
         self._update_now_status("큐 대기 준비 완료")
         self.show_toast(f"폴더에서 {len(tracks)}개 파일 불러옴", "📂")
 
@@ -1197,14 +1280,12 @@ class MainWindow(QtWidgets.QWidget):
         tracks = Core.scan_paths(files)
         for t in tracks:
             self._add_track_to_list(t)
-        self._rebuild_queue_state()
+        self._integrate_new_tracks(tracks)
         self.show_toast(f"{len(tracks)}개 파일 추가됨", "➕")
 
     def update_repeats_and_restart(self):
-        self._rebuild_queue_state()
-        self._sofar.clear()
-        self._history.clear()
-        self.current_path = None
+        self._stop_playback_reset()
+        self._rebuild_queue_state(force_rebuild=True)
         self._update_now_status("재생 큐 리셋 완료")
         self.play_next()
         self.show_toast("재생 큐가 리셋되고 처음부터 시작합니다.", "🔄")
@@ -1213,7 +1294,7 @@ class MainWindow(QtWidgets.QWidget):
     def play(self):
         if self.player.playbackState() == QMediaPlayer.PlayingState:
             return
-        if self.current_path is None:
+        if self.current_track is None:
             self.play_next()
         else:
             self.player.play()
@@ -1228,20 +1309,26 @@ class MainWindow(QtWidgets.QWidget):
             self.play()
 
     def play_next(self):
-        if self.current_path is not None:
-            self._history.append(self.current_path)
+        if self.current_track is not None:
+            self._history.append(self.current_track)
 
         if not self.queue.has_next():
-            self.current_path = None
+            self._pending_play = False
+            self.current_track = None
+            self._is_changing_source = True
+            try:
+                self.player.stop()
+            finally:
+                self._is_changing_source = False
             self._update_now_status("모든 트랙 재생 완료")
-            self.list.highlight_path(None)
+            self.list.highlight_track(None)
             return
 
-        self.current_path = self.queue.pop_next()
-        if self.current_path is not None:
-            self._sofar[self.current_path] += 1
+        self.current_track = self.queue.pop_next()
+        if self.current_track is not None:
+            self._sofar[self.current_track.uid] += 1
 
-        url = QUrl.fromLocalFile(str(self.current_path))
+        url = QUrl.fromLocalFile(str(self.current_track.path))
         self._pending_play = True
         self._is_changing_source = True
         try:
@@ -1250,20 +1337,20 @@ class MainWindow(QtWidgets.QWidget):
         finally:
             self._is_changing_source = False
 
-        self.list.highlight_path(self.current_path)
+        self.list.highlight_track(self.current_track)
         self._update_now_status("재생중")
 
     def play_prev(self):
         if not self._history:
             return
-        prev_path = self._history.pop()
-        if self.current_path is not None and hasattr(self.queue, "_q"):
-            self.queue._q.appendleft(self.current_path)
-            if self._sofar.get(self.current_path, 0) > 0:
-                self._sofar[self.current_path] -= 1
+        prev_track = self._history.pop()
+        if self.current_track is not None:
+            self.queue._q.appendleft(self.current_track)
+            if self._sofar.get(self.current_track.uid, 0) > 0:
+                self._sofar[self.current_track.uid] -= 1
 
-        self.current_path = prev_path
-        url = QUrl.fromLocalFile(str(self.current_path))
+        self.current_track = prev_track
+        url = QUrl.fromLocalFile(str(self.current_track.path))
         self._pending_play = True
         self._is_changing_source = True
         try:
@@ -1272,7 +1359,7 @@ class MainWindow(QtWidgets.QWidget):
         finally:
             self._is_changing_source = False
 
-        self.list.highlight_path(self.current_path)
+        self.list.highlight_track(self.current_track)
         self._update_now_status("재생중")
 
     def _update_now_status(self, state_text: str):
@@ -1281,7 +1368,7 @@ class MainWindow(QtWidgets.QWidget):
         self.lbl_queue_stats.setText(f"🎵 {track_cnt}개 트랙")
 
         # 재생 상태별 뱃지 스타일 & 아이콘 지정
-        if "재생중" in state_text or ("재생" in state_text and "완료" not in state_text and "리셋" not in state_text and "준비" not in state_text):
+        if state_text == "재생중" or state_text.startswith("재생중"):
             self.lbl_status_badge.setText("🟢 재생 중")
             self.lbl_status_badge.setStyleSheet("""
                 color: #34D399;
@@ -1314,7 +1401,7 @@ class MainWindow(QtWidgets.QWidget):
                 font-size: 11px;
                 font-weight: 700;
             """)
-        elif "완료" in state_text or "끝" in state_text:
+        elif "모든 트랙 재생 완료" in state_text or state_text.endswith("재생 완료"):
             self.lbl_status_badge.setText("🏁 모든 재생 완료")
             self.lbl_status_badge.setStyleSheet("""
                 color: #A78BFA;
@@ -1338,13 +1425,13 @@ class MainWindow(QtWidgets.QWidget):
             """)
 
         # 상세 텍스트 정보 표시 (StatusElidedLabel: 파일명과 반복 횟수 접미사 분리 전달)
-        if self.current_path is not None:
-            k = self._sofar.get(self.current_path, 0)
-            n = self._totals.get(self.current_path, 0)
+        if self.current_track is not None:
+            k = self._sofar.get(self.current_track.uid, 0)
+            n = self._totals.get(self.current_track.uid, 0)
             if n > 0 and k > n:
                 k = n
             rpt = f" • 반복 ({k}/{n}회)" if n > 0 else ""
-            self.lbl_status_text.setStatusText(self.current_path.name, rpt)
+            self.lbl_status_text.setStatusText(self.current_track.path.name, rpt)
         else:
             self.lbl_status_text.setStatusText(state_text, "")
 
@@ -1355,11 +1442,12 @@ class MainWindow(QtWidgets.QWidget):
         self.lbl_time.setText(f"{Core.format_ms(cur)} / {Core.format_ms(dur_ms)}")
 
         # 현재 실행중인 트랙의 duration 정보 기록
-        if self.current_path is not None:
+        if self.current_track is not None and dur_ms > 0:
+            self.current_track.duration_ms = dur_ms
             for i in range(self.list.count()):
                 it = self.list.item(i)
                 w: TrackRow = self.list.itemWidget(it)
-                if w and w.track.path == self.current_path:
+                if w and w.track.uid == self.current_track.uid:
                     w.set_duration(dur_ms)
                     break
             self._rebuild_queue_state(reset_queue=False)
@@ -1409,8 +1497,7 @@ class MainWindow(QtWidgets.QWidget):
             self._update_now_status("재생중")
         elif state == QMediaPlayer.PausedState:
             self._update_now_status("일시정지")
-        else:
-            self._update_now_status("정지")
+        # Stopped: 플레이리스트 종료/소스 교체 시 "완료·대기" 문구를 덮어쓰지 않음
 
     def _on_media_status_changed(self, status):
         # 비동기 미디어 로딩 완료 시 재생 보장
@@ -1427,13 +1514,32 @@ class MainWindow(QtWidgets.QWidget):
             self.play_next()
 
     def _on_player_error(self, err, *args):
+        self._pending_play = False
         self._update_now_status(f"오류: {self.player.errorString()}")
+
+    def closeEvent(self, event: QtGui.QCloseEvent):
+        self._pending_play = False
+        if self._merge_proc is not None:
+            try:
+                self._merge_proc.kill()
+            except Exception:
+                pass
+            self._merge_proc = None
+        try:
+            self.player.stop()
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     # ===== 📎 FFmpeg 파일 합치기 구현 =====
     def combine_files(self):
+        if self._merge_proc is not None and self._merge_proc.state() != QProcess.NotRunning:
+            self.show_toast("이미 파일 합치기가 진행 중입니다.", "⚠️")
+            return
+
         tracks = self.list.items_in_order()
         try:
-            list_file, seq = Core.build_concat_manifest(tracks)
+            list_file, _seq = Core.build_concat_manifest(tracks)
         except ValueError as e:
             QtWidgets.QMessageBox.warning(self, "합치기 취소", str(e))
             return
@@ -1454,6 +1560,7 @@ class MainWindow(QtWidgets.QWidget):
         out_path = out_path.with_name(safe_out_name)
         ext = out_path.suffix.lower().lstrip(".")
 
+        self._merge_canceled = False
         # 모달 프로그레스 대화상자
         self._merge_progress = QtWidgets.QProgressDialog("FFmpeg 오디오 합치기 진행 중...", "취소", 0, 0, self)
         self._merge_progress.setWindowModality(Qt.ApplicationModal)
@@ -1499,13 +1606,28 @@ class MainWindow(QtWidgets.QWidget):
             except Exception:
                 pass
             self._merge_proc = None
+            self._merge_canceled = False
 
     def _on_merge_cancel(self):
-        if self._merge_proc:
-            self._merge_proc.terminate()
-            QtCore.QTimer.singleShot(1000, lambda: self._merge_proc and self._merge_proc.kill())
+        self._merge_canceled = True
+        proc = self._merge_proc
+        if not proc:
+            return
+        proc.terminate()
+
+        def _kill_if_still_running(p=proc):
+            try:
+                if isValid(p) and p.state() != QProcess.NotRunning:
+                    p.kill()
+            except Exception:
+                pass
+
+        QtCore.QTimer.singleShot(1000, _kill_if_still_running)
 
     def _on_merge_finished(self, code: int, list_file: str, out_path: Path):
+        canceled = self._merge_canceled
+        self._merge_canceled = False
+
         if self._merge_progress:
             self._merge_progress.close()
         try:
@@ -1513,7 +1635,9 @@ class MainWindow(QtWidgets.QWidget):
         except Exception:
             pass
 
-        if code == 0 and out_path.exists():
+        if canceled:
+            self.show_toast("파일 합치기가 취소되었습니다.", "ℹ️")
+        elif code == 0 and out_path.exists():
             self.show_toast("파일 합치기가 성공적으로 완료되었습니다!", "✅")
             QtWidgets.QMessageBox.information(self, "성공", f"합쳐진 파일이 성공적으로 저장되었습니다:\n{out_path}")
         else:

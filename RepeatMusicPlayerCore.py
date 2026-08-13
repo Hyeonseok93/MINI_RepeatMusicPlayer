@@ -1,10 +1,13 @@
 from __future__ import annotations
+
 import os
 import re
+import subprocess
 import sys
 import unicodedata
+import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Deque, List, Optional, Set, Tuple
 
@@ -15,13 +18,12 @@ def resource_path(rel: str) -> str:
     """PyInstaller --onefile 환경 및 개발 환경 리소스 경로 추적 유틸리티"""
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(getattr(sys, "_MEIPASS"), rel)
-    # 개발 환경 (현재 스크립트 기준 절대 경로)
     base = os.path.dirname(os.path.abspath(__file__))
     return os.path.join(base, rel)
 
 
 def find_ffmpeg_bin() -> str:
-    """내장 또는 시스템 FFmpeg 실행 파일 경로를 반환합니다."""
+    """내장(assets/ffmpeg) 또는 시스템 PATH의 FFmpeg 실행 파일 경로"""
     exe_name = "ffmpeg.exe" if os.name == "nt" else "ffmpeg"
     cand = resource_path(os.path.join("assets", "ffmpeg", exe_name))
     if os.path.exists(cand):
@@ -30,12 +32,41 @@ def find_ffmpeg_bin() -> str:
 
 
 def find_ffprobe_bin() -> str:
-    """내장 또는 시스템 FFprobe 실행 파일 경로를 반환합니다."""
+    """내장(assets/ffmpeg) 또는 시스템 PATH의 FFprobe 실행 파일 경로"""
     exe_name = "ffprobe.exe" if os.name == "nt" else "ffprobe"
     cand = resource_path(os.path.join("assets", "ffmpeg", exe_name))
     if os.path.exists(cand):
         return cand
     return "ffprobe"
+
+
+def probe_duration_ms(path: Path, timeout_s: float = 8.0) -> int:
+    """ffprobe로 오디오 duration(ms) 조회. 실패 시 0."""
+    ffprobe = find_ffprobe_bin()
+    args = [
+        ffprobe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(path),
+    ]
+    kwargs = {
+        "capture_output": True,
+        "text": True,
+        "timeout": timeout_s,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+    try:
+        r = subprocess.run(args, **kwargs)
+        if r.returncode == 0 and r.stdout and r.stdout.strip():
+            return max(0, int(float(r.stdout.strip()) * 1000))
+    except Exception:
+        pass
+    return 0
 
 
 def safe_filename(name: str) -> str:
@@ -61,42 +92,48 @@ def natural_sort_key(s: str) -> list:
 
 @dataclass
 class Track:
-    """오디오 트랙 데이터 모델"""
+    """오디오 트랙 데이터 모델 (동일 경로라도 uid로 구분)"""
 
     path: Path
     repeats: int = 1
     duration_ms: int = 0
-
-    @property
-    def name(self) -> str:
-        return self.path.name
+    uid: str = field(default_factory=lambda: uuid.uuid4().hex)
 
     @property
     def total_repeats_duration_ms(self) -> int:
         return self.duration_ms * max(0, self.repeats)
 
 
-def scan_folder(folder_path: str) -> List[Track]:
+def scan_folder(folder_path: str, probe: bool = True) -> List[Track]:
     """지정한 폴더 내 지원 오디오 파일들을 내추럴 정렬하여 트랙 리스트로 반환"""
     p = Path(folder_path)
     if not p.exists() or not p.is_dir():
         return []
     tracks: List[Track] = []
-    file_list = sorted([f for f in p.iterdir() if f.is_file() and f.suffix.lower() in SUPPORTED_EXTS], key=lambda x: natural_sort_key(x.name))
+    file_list = sorted(
+        [f for f in p.iterdir() if f.is_file() and f.suffix.lower() in SUPPORTED_EXTS],
+        key=lambda x: natural_sort_key(x.name),
+    )
     for f in file_list:
-        tracks.append(Track(path=f, repeats=1))
+        t = Track(path=f, repeats=1)
+        if probe:
+            t.duration_ms = probe_duration_ms(f)
+        tracks.append(t)
     return tracks
 
 
-def scan_paths(paths: List[str]) -> List[Track]:
+def scan_paths(paths: List[str], probe: bool = True) -> List[Track]:
     """파일 및 폴더 경로 목록에서 개별 오디오 트랙 스캔"""
     tracks: List[Track] = []
     for path_str in paths:
         p = Path(path_str)
         if p.is_dir():
-            tracks.extend(scan_folder(str(p)))
+            tracks.extend(scan_folder(str(p), probe=probe))
         elif p.is_file() and p.suffix.lower() in SUPPORTED_EXTS:
-            tracks.append(Track(path=p, repeats=1))
+            t = Track(path=p, repeats=1)
+            if probe:
+                t.duration_ms = probe_duration_ms(p)
+            tracks.append(t)
     return tracks
 
 
@@ -136,13 +173,13 @@ class PlayQueue:
     """
     재생 큐 관리자
     - order: UI에서 정렬된 트랙 리스트
-    - build_queue(): 각 트랙의 repeats 횟수만큼 재생 큐 생성
-    - pop_next(): 다음 재생 파일 반환
+    - build_queue(): 각 트랙의 repeats 횟수만큼 Track 참조를 큐에 적재
+    - pop_next(): 다음 재생 Track 반환
     """
 
     def __init__(self):
         self.order: List[Track] = []
-        self._q: Deque[Path] = deque()
+        self._q: Deque[Track] = deque()
 
     def set_order(self, tracks: List[Track]):
         self.order = tracks
@@ -152,7 +189,7 @@ class PlayQueue:
         for t in self.order:
             reps = max(0, int(t.repeats))
             for _ in range(reps):
-                self._q.append(t.path)
+                self._q.append(t)
 
     def clear(self):
         self._q.clear()
@@ -160,13 +197,19 @@ class PlayQueue:
     def has_next(self) -> bool:
         return len(self._q) > 0
 
-    def pop_next(self) -> Optional[Path]:
+    def pop_next(self) -> Optional[Track]:
         if not self._q:
             return None
         return self._q.popleft()
 
     def remaining_count(self) -> int:
         return len(self._q)
+
+    def append_track_plays(self, track: Track):
+        """재생 중 추가된 트랙을 남은 큐 끝에 반영"""
+        reps = max(0, int(track.repeats))
+        for _ in range(reps):
+            self._q.append(track)
 
     def total_expected_duration_ms(self) -> int:
         """반복 횟수가 반영된 총 예정 재생 시간 계산"""

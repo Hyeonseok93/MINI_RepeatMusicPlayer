@@ -8,9 +8,10 @@ import sys
 import tempfile
 import traceback
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtGui, QtWidgets
 from PySide6.QtCore import QLockFile, QTimer
 
+import RepeatMusicPlayerCore as Core
 from RepeatMusicPlayerUi import MainWindow
 
 # ---- PyInstaller 부트 스플래시 연동 ----
@@ -30,17 +31,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     return parser.parse_args(argv[1:])
 
 
-def resource_path(rel: str) -> str:
-    """PyInstaller --onefile 리소스 경로 유틸리티"""
-    if hasattr(sys, "_MEIPASS"):
-        return os.path.join(getattr(sys, "_MEIPASS"), rel)
-    base = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base, rel)
-
-
 def load_app_icon() -> QtGui.QIcon:
-    for cand in ("assets/app.ico", "assets/app.png", "asset/app.ico"):
-        p = resource_path(cand)
+    for cand in ("assets/app.ico", "assets/app.png"):
+        p = Core.resource_path(cand)
         if os.path.exists(p):
             return QtGui.QIcon(p)
     return QtGui.QIcon()
@@ -78,6 +71,16 @@ class App(QtWidgets.QApplication):
         if not icon.isNull():
             self.setWindowIcon(icon)
 
+        # Font Database Loading (Pretendard) — 다른 MINI 앱과 동일
+        for font_name in ("Pretendard-Medium.ttf", "Pretendard-Bold.ttf"):
+            font_path = Core.resource_path(os.path.join("assets", "fonts", font_name))
+            if os.path.exists(font_path):
+                QtGui.QFontDatabase.addApplicationFont(font_path)
+
+        app_font = QtGui.QFont("Pretendard", 10)
+        app_font.setStyleHint(QtGui.QFont.SansSerif)
+        self.setFont(app_font)
+
         self.win = MainWindow()
         if not icon.isNull():
             self.win.setWindowIcon(icon)
@@ -92,19 +95,27 @@ def main() -> int:
     args = parse_args(sys.argv)
     setup_exception_hook(debug_mode=args.debug)
 
-    app = App(sys.argv)
-
-    # 단일 인스턴스 중복 실행 방지
+    # 단일 인스턴스: 창을 띄우기 전에 잠금 (실패 시에만 임시 QApplication으로 안내)
     lock_file = None
     if not args.multi:
         lock_path = os.path.join(tempfile.gettempdir(), "mini_repeat_music_player.lock")
         lock_file = QLockFile(lock_path)
         lock_file.setStaleLockTime(0)
         if not lock_file.tryLock(100):
+            if _boot_splash is not None:
+                try:
+                    _boot_splash.close()
+                except Exception:
+                    pass
+            dummy = QtWidgets.QApplication([sys.argv[0]])
             QtWidgets.QMessageBox.information(
                 None, "안내", "Repeat Music Player가 이미 실행 중입니다.\n기존 프로세스를 확인해 주세요."
             )
+            del dummy
             return 0
+
+    # 커스텀 CLI 플래그를 Qt로 넘기지 않음
+    app = App([sys.argv[0]])
 
     try:
         ret = app.exec()

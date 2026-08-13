@@ -47,12 +47,12 @@ PySide6 기반의 **음악 트랙별 개별 반복 재생 & 통합 병합 유틸
 ```text
 MINI_RepeatMusicPlayer/
 ┣━━ 📂 .github/                   # README 이미지 및 뱃지 자산 (logo, preview, badges)
-┣━━ 📂 assets/                    # 아이콘, 앱 로고 및 FFmpeg 바이너리 자산
-┣━━ 📄 RepeatMusicPlayerApp.py    # 프로그램 진입점 및 애플리케이션 초기화
-┣━━ 📄 RepeatMusicPlayerCore.py   # 음원 스캔, 재생 큐 관리자 및 FFmpeg Concat 매니페스트
+┣━━ 📂 assets/                    # 아이콘·Pretendard 폰트 (FFmpeg는 로컬 전용, git 미포함)
+┣━━ 📄 RepeatMusicPlayerApp.py    # 프로그램 진입점, Pretendard 폰트 및 단일 인스턴스 훅
+┣━━ 📄 RepeatMusicPlayerCore.py   # 음원 스캔, 재생 큐, ffprobe duration, FFmpeg Concat
 ┣━━ 📄 RepeatMusicPlayerUi.py     # PySide6 메인 UI, 트랙 행 커스텀 위젯 및 스마트 말줄임 라벨
 ┣━━ 📄 build.bat                  # Portable Executable 자동 빌드 스크립트
-┣━━ 📄 requirements.txt           # 필수 의존성 목록 (PySide6, PyInstaller)
+┣━━ 📄 requirements.txt           # 필수 의존성 목록 (PySide6, PyInstaller, Pillow)
 ┣━━ 📄 .gitignore                 # Git 제외 파일 설정
 ┗━━ 📄 README.md                  # 프로젝트 설명 문서
 ```
@@ -62,6 +62,8 @@ MINI_RepeatMusicPlayer/
 ### 📋 Prerequisites (사전 요구사항)
 - **OS**: Windows 10 / 11
 - **Python**: Python 3.10+ 권장
+- **FFmpeg** (파일 합치기 / duration 측정): PATH에 `ffmpeg`·`ffprobe`가 있거나, 로컬에 `assets/ffmpeg/ffmpeg.exe`·`ffprobe.exe`를 두면 됩니다.  
+  > ⚠️ 바이너리(~170MB)는 저장소에 포함하지 않습니다. 직접 받아 `assets/ffmpeg/`에 배치하거나 시스템에 설치하세요.
 
 ### 1. 소스 코드 직접 실행 (Run from Source)
 

@@ -16,7 +16,6 @@ taskkill /F /IM "%APP_NAME%.exe" >nul 2>&1
 echo [1/4] Clean existing build artifacts...
 if exist build rmdir /S /Q build >nul 2>&1
 if exist dist rmdir /S /Q dist >nul 2>&1
-if exist __pycache__ rmdir /S /Q __pycache__ >nul 2>&1
 if exist %APP_NAME%.spec del /F /Q %APP_NAME%.spec >nul 2>&1
 
 echo [2/4] Setup isolated virtual environment (.venv)...
@@ -35,7 +34,9 @@ set "ICONOPT="
 set "DATAOPT="
 if exist "%ICON%" (
   set "ICONOPT=--icon=%ICON%"
-  set "DATAOPT=--add-data=%ICON%;assets"
+)
+if exist "assets" (
+  set "DATAOPT=--add-data=assets;assets"
 )
 
 set "SPLASHOPT="
@@ -83,11 +84,11 @@ if exist "dist\%APP_NAME%.exe" (
   move /Y "dist\%APP_NAME%.exe" "%APP_NAME%.exe" >nul 2>&1
   if exist dist rmdir /S /Q dist >nul 2>&1
   if exist build rmdir /S /Q build >nul 2>&1
-  if exist __pycache__ rmdir /S /Q __pycache__ >nul 2>&1
   if exist %APP_NAME%.spec del /F /Q %APP_NAME%.spec >nul 2>&1
+  for /d /r %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d" 2>nul
 
-  REM Keep isolated virtual environment for local testing
   call .venv\Scripts\deactivate.bat >nul 2>&1
+  if exist .venv rmdir /S /Q .venv >nul 2>&1
 
   if exist "%APP_NAME%.exe" (
     echo ========================================================
